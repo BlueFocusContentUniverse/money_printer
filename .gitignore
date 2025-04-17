@@ -1,0 +1,95 @@
+# Python相关
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 虚拟环境
+venv/
+ENV/
+env/
+.env
+
+# 日志文件
+*.log
+logs/
+celerybeat-schedule
+celerybeat.pid
+
+# 临时文件
+*.swp
+*.swo
+.DS_Store
+*~
+.idea/
+.vscode/
+*.sublime*
+
+# 媒体文件 - 临时视频和音频文件
+temp_*.mp4
+temp_*.mp3
+temp_*.wav
+temp_*.png
+temp_*.jpg
+temp_*_temp_overlay.mp4
+temp_*_segment_*.mp4
+
+# 缓存
+.cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# MinIO测试桶和配置
+minio_data/
+minio_config/
+
+# 本地配置
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Redis数据文件
+dump.rdb
+
+# Celery相关
+worker/work/*/
+celerybeat-schedule.db
+
+# 大型二进制文件
+*.mp4
+*.MP4
+*.mp3
+*.MP3
+*.wav
+*.WAV
+*.txt
+*.TXT
+*.csv
+*.CSV
+
+# 敏感配置文件
+config.ini
+secrets.json
+api_keys.json 
+*.lock 
+*.yml
+!common/config/config.example.yml
