@@ -85,6 +85,12 @@ celerybeat-schedule.db
 *.TXT
 *.csv
 *.CSV
+*.png
+*.PNG
+*.jpg
+*.JPG
+*.jpeg
+*.JPEG
 
 # 敏感配置文件
 config.ini

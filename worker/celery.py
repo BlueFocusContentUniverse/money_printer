@@ -26,6 +26,7 @@ from services.material_process.sound_effect_analyzer import SoundEffectAnalyzer
 from services.material_process.sound_effect_process import SoundEffectProcessor
 from services.captioning.caption_from_text_audio import CaptioningService
 from services.hunjian.hunjian_service import get_video_content_text, get_format_video_scene_text_list
+from services.captioning.subtitle_correction_service import SubtitleCorrectionService
 from data.data_base_manager import DatabaseManager
 from worker.task_record_manager import TaskRecordManager
 from celery import shared_task
@@ -242,35 +243,37 @@ class VideoGenerationTask(Task):
         
         return super().on_failure(exc, task_id, args, kwargs, einfo)
     
-def get_task_params_from_db(task_id):
+def get_task_params_from_db(task_id, table_name=None):
     """从数据库获取任务参数"""
     db_manager = DatabaseManager()
-    task = db_manager.get_task_by_id(task_id)
+    task = db_manager.get_task_by_id(task_id, table_name)
     if task:
         return task
     return None
 
 @app.task(bind=True, base=VideoGenerationTask)
-def generate_video_task(self, task_id: str) -> Dict[str, Any]:
+def generate_video_task(self, task_id: str, table_name: str = None) -> Dict[str, Any]:
     """
     异步视频生成任务
     参数:
-        task_params: 包含所有必要参数的字典
+        task_id: 任务ID
+        table_name: 任务所在的表名
     返回:
         包含任务结果的字典
     """
     try:
         
         # 从数据库获取任务参数
-        print("task_id:",task_id)
-        task_params = get_task_params_from_db(task_id)
-        print("task_params:",task_params)
+        print("task_id:", task_id)
+        print("table_name:", table_name)
+        task_params = get_task_params_from_db(task_id, table_name)
+        print("task_params:", task_params)
         if not task_params:
             raise ValueError(f"Task {task_id} not found in database")
 
         # 更新任务状态
         db_manager = DatabaseManager()
-        db_manager.update_task_status(task_id, 'processing')
+        db_manager.update_task_status(task_id, 'processing', table_name)
         self.track_user_task(task_params.get('user_id'), self.request.id)
 
         # 更新任务状态 - 开始处理
@@ -296,7 +299,7 @@ def generate_video_task(self, task_id: str) -> Dict[str, Any]:
                     task_params['tags'] = tag_result['tag_name']
                     # task_params['tag_name'] = tag_result['tag_name']
                     # 同时更新数据库中的记录，只传入tag_name作为tags参数
-                    db_manager.update_task_tags(task_id, tag_result['tag_name'], tag_result['tag_name'])
+                    db_manager.update_task_tags(task_id, tag_result['tag_name'], tag_result['tag_name'], table_name)
                 else:
                     print("未能从口播稿中提取有效标签")
             else:
@@ -504,11 +507,6 @@ def generate_video_task(self, task_id: str) -> Dict[str, Any]:
                 video_info['end_time'],
                 video_info['duration']# 使用视频实际的结束时间
             )
-            print("time_range:--------------",time_range)
-            # time_range 包含:
-            # - should_process: 是否需要处理
-            # - start_time: 实际开始时间
-            # - end_time: 实际结束时间
             
             if time_range.should_process:
                 # 3.3 处理视频：归一化并添加贴图
@@ -557,6 +555,32 @@ def generate_video_task(self, task_id: str) -> Dict[str, Any]:
                 
                 # 使用 transcribe_video_audio 方法处理音频并获取分段结果
                 simplified_segments = recognizer.transcribe_video_audio(merged_audio_file, audio_output_dir)
+                
+                # 从任务参数中获取原始口播稿
+                original_script = task_params.get('video_scene_text_1', '')
+                
+                # 使用字幕校对服务对识别结果进行校对
+                if original_script.strip():
+                    try:
+                        # 初始化字幕校对服务
+                        correction_service = SubtitleCorrectionService()
+                        
+                        # 对字幕内容进行校对
+                        print(f"开始基于原始口播稿校对字幕内容...")
+                        corrected_segments = correction_service.correct_subtitles(
+                            simplified_segments, 
+                            original_script
+                        )
+                        
+                        # 使用校对后的结果
+                        simplified_segments = corrected_segments
+                        print(f"字幕校对完成，共校对 {len(simplified_segments)} 段字幕")
+                    except Exception as e:
+                        print(f"字幕校对过程中出错: {str(e)}")
+                        # 校对失败时继续使用原始识别结果
+                        traceback.print_exc()
+                else:
+                    print("未提供原始口播稿，跳过字幕校对步骤")
                 
                 # 生成SRT文件
                 random_name = random_with_system_time()
@@ -615,7 +639,7 @@ def generate_video_task(self, task_id: str) -> Dict[str, Any]:
                 'result': None
             }
             self.update_state(self.request.id, 'FAILURE', failure_data)
-            db_manager.update_task_status(task_id, 'FAILURE')
+            db_manager.update_task_status(task_id, 'FAILURE', table_name)
             return {'status': 'FAILURE', 'error': '视频生成失败：未能生成有效的视频文件'}
         
         video_filename = os.path.basename(video_file)
@@ -667,7 +691,7 @@ def generate_video_task(self, task_id: str) -> Dict[str, Any]:
                 if url_success:
                     print(f"视频已上传到MinIO，访问URL: {minio_url}")
                     # 更新数据库中的minio_path字段
-                    db_manager.update_task_status(task_id=task_id, status='SUCCESS', 
+                    db_manager.update_task_status(task_id=task_id, status='SUCCESS', table_name=table_name, 
                                                 result_path=permanent_video_path, 
                                                 minio_path=minio_url)
                 else:
@@ -692,7 +716,7 @@ def generate_video_task(self, task_id: str) -> Dict[str, Any]:
         # 注意：这里不再需要重复更新数据库，因为在上传MinIO成功后已经更新过了
         # 如果MinIO上传失败，则在这里更新数据库
         if 'minio_url' not in locals() or not url_success:
-            db_manager.update_task_status(task_id=task_id, status='SUCCESS', result_path=permanent_video_path)
+            db_manager.update_task_status(task_id=task_id, status='SUCCESS', table_name=table_name, result_path=permanent_video_path)
 
         return {'status': 'SUCCESS', 'result': permanent_video_path}
 
@@ -707,7 +731,7 @@ def generate_video_task(self, task_id: str) -> Dict[str, Any]:
             'traceback': traceback.format_exc()
         }
         self.update_state(self.request.id, 'FAILURE', failure_data)
-        db_manager.update_task_status(task_id, 'FAILURE',error_message=str(failure_data))
+        db_manager.update_task_status(task_id, 'FAILURE', table_name, error_message=str(failure_data))
 
         return {'status': 'FAILURE', 'error': str(e)}
     
@@ -740,22 +764,26 @@ def scan_and_process_ready_tasks():
     """
     try:
         db_manager = DatabaseManager()
+        # 从所有表中获取任务
         ready_tasks = db_manager.get_ready_tasks()
         
+        task_count = 0
         for task in ready_tasks:
-            # 生成任务ID
+            # 获取任务ID和源表
             task_id = task['task_id']
+            source_table = task.get('source_table')
             
             # 更新任务状态为处理中
-            db_manager.update_task_status(task_id, 'processing')
+            db_manager.update_task_status(task_id, 'processing', source_table)
             
             # 异步提交视频生成任务
             generate_video_task.apply_async(
-                kwargs={'task_id': task_id},
+                kwargs={'task_id': task_id, 'table_name': source_table},
                 queue='high_priority'
             )
+            task_count += 1
             
-        return len(ready_tasks)  # 返回处理的任务数量
+        return task_count  # 返回处理的任务数量
     except Exception as e:
         print(f"扫描任务失败: {str(e)}")
         return 0
@@ -771,14 +799,15 @@ def retry_failed_tasks(max_retry_count=3):
         
         retried_count = 0
         for task in failed_tasks:
-            # 获取任务ID
+            # 获取任务ID和源表
             task_id = task['task_id']
+            source_table = task.get('source_table')
             
             # 增加重试计数
-            db_manager.increment_retry_count(task_id)
+            db_manager.increment_retry_count(task_id, source_table)
             
             # 更新任务状态为准备重试
-            db_manager.update_task_status(task_id, 'ready', 
+            db_manager.update_task_status(task_id, 'ready', source_table, 
                                          error_message=f"自动重试 (尝试 {task.get('retry_count', 0) + 1}/{max_retry_count})")
             
             print(f"已将失败任务 {task_id} 标记为重试状态")
